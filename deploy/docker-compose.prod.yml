@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ai-stock-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ai_stock
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./mysql/conf.d:/etc/mysql/conf.d
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-stock-redis
+    restart: always
+    command: redis-server /etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis/redis.conf:/etc/redis/redis.conf
+      - redis_data:/data
+
+  data-service:
+    build:
+      context: ./data-service
+      dockerfile: Dockerfile
+    container_name: ai-stock-data-service
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      MYSQL_HOST: mysql
+      REDIS_HOST: redis
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai-stock-backend
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ai_stock?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      SPRING_REDIS_HOST: redis
+      ADVISOR_DATA_SERVICE_URL: http://data-service:8001
+      LLM_API_KEY: ${LLM_API_KEY}
+      JAVA_OPTS: "-Xms256m -Xmx512m -XX:+UseG1GC"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      data-service:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai-stock-frontend
+    restart: always
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
