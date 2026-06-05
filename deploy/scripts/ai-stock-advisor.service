@@ -1,0 +1,15 @@
+[Unit]
+Description=AI Stock Advisor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/ai-stock-advisor
+ExecStart=/opt/ai-stock-advisor/scripts/start.sh
+ExecStop=/opt/ai-stock-advisor/scripts/stop.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
