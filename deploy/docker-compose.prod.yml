@@ -43,6 +43,7 @@ services:
       - "8001:8001"
     environment:
       MYSQL_HOST: mysql
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       REDIS_HOST: redis
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
