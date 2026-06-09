@@ -74,7 +74,9 @@ public class BacktestController {
             Request request = new Request.Builder().url(url).get().build();
             try (Response response = httpClient.newCall(request).execute()) {
                 if (response.isSuccessful() && response.body() != null) {
-                    return JSON.parseObject(response.body().string());
+                    byte[] bytes = response.body().bytes();
+                    String respStr = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    return JSON.parseObject(respStr);
                 }
             }
         } catch (IOException e) {
@@ -89,7 +91,9 @@ public class BacktestController {
             Request request = new Request.Builder().url(url).post(body).build();
             try (Response response = httpClient.newCall(request).execute()) {
                 if (response.isSuccessful() && response.body() != null) {
-                    return JSON.parseObject(response.body().string());
+                    byte[] bytes = response.body().bytes();
+                    String respStr = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    return JSON.parseObject(respStr);
                 }
             }
         } catch (IOException e) {

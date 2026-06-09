@@ -44,8 +44,14 @@ public class DataServiceClient {
      * 搜索资讯
      */
     public List<JSONObject> searchNews(String keyword, int limit) {
-        String url = config.getDataServiceUrl() + "/api/news/search?keyword=" + keyword + "&limit=" + limit;
-        return requestList(url);
+        try {
+            String encodedKeyword = java.net.URLEncoder.encode(keyword, "UTF-8");
+            String url = config.getDataServiceUrl() + "/api/news/search?keyword=" + encodedKeyword + "&limit=" + limit;
+            return requestList(url);
+        } catch (Exception e) {
+            String url = config.getDataServiceUrl() + "/api/news/search?keyword=" + keyword + "&limit=" + limit;
+            return requestList(url);
+        }
     }
 
     /**
@@ -120,7 +126,8 @@ public class DataServiceClient {
             Request request = new Request.Builder().url(url).get().build();
             try (Response response = httpClient.newCall(request).execute()) {
                 if (response.isSuccessful() && response.body() != null) {
-                    String body = response.body().string();
+                    byte[] bytes = response.body().bytes();
+                    String body = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
                     JSONObject json = JSON.parseObject(body);
                     JSONArray data = json.getJSONArray("data");
                     if (data != null) {
@@ -139,7 +146,9 @@ public class DataServiceClient {
             Request request = new Request.Builder().url(url).get().build();
             try (Response response = httpClient.newCall(request).execute()) {
                 if (response.isSuccessful() && response.body() != null) {
-                    return JSON.parseObject(response.body().string());
+                    byte[] bytes = response.body().bytes();
+                    String body = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    return JSON.parseObject(body);
                 }
             }
         } catch (IOException e) {
