@@ -123,15 +123,11 @@ const weightsTable = computed(() => {
 const loadPeriods = async () => {
   try {
     const res = await axios.get('/api/backtest/periods')
-    // 解包：Result<JSONObject> -> {code, data: {code, data: {periods}}}
-    let raw = res.data?.data
-    // 如果还有内层 code/data 结构就再解一层
-    if (raw && raw.code !== undefined && raw.data !== undefined) {
-      raw = raw.data
-    }
-    periods.value = raw || {}
+    const raw = res.data
+    // Python 直接返回 {code: 0, data: {...}}
+    periods.value = raw?.data || {}
     selectedPeriods.value = Object.keys(periods.value)
-  } catch (e) { console.error(e) }
+  } catch (e) { console.error('loadPeriods error:', e) }
 }
 
 const loadHistory = async () => {
@@ -172,25 +168,51 @@ const startBacktest = async () => {
         target_avg_return: config.value.targetAvgReturn,
         periods: selectedPeriods.value.join(','),
       },
-      timeout: 1800000  // 30 分钟超时
+      timeout: 30000
     })
     if (res.data?.code === 0) {
-      let innerData = res.data.data
-      if (innerData && innerData.code !== undefined && innerData.data !== undefined) {
-        innerData = innerData.data
-      }
-      latestResult.value = innerData
-      latestApplied.value = false
-      ElMessage.success('进化优化完成！')
-      loadHistory()
+      ElMessage.success('回测任务已启动，正在后台运行...')
+      pollProgress()
     } else {
-      ElMessage.error(res.data?.message || '优化失败')
+      ElMessage.error(res.data?.message || '启动失败')
+      running.value = false
     }
   } catch (e) {
-    ElMessage.error('请求超时或失败')
-  } finally {
+    ElMessage.error('启动请求失败')
     running.value = false
   }
+}
+
+const pollProgress = () => {
+  const timer = setInterval(async () => {
+    try {
+      const res = await axios.get('/api/backtest/status')
+      let progress = res.data?.data
+      if (progress && progress.code !== undefined && progress.data !== undefined) {
+        progress = progress.data
+      }
+
+      if (progress?.status === 'completed') {
+        clearInterval(timer)
+        running.value = false
+        latestResult.value = progress.result
+        latestApplied.value = false
+        ElMessage.success('进化优化完成！')
+        loadHistory()
+      } else if (progress?.status === 'failed') {
+        clearInterval(timer)
+        running.value = false
+        ElMessage.error('回测失败: ' + (progress.error || '未知错误'))
+      } else if (progress?.status === 'running') {
+        // 更新进度显示
+        const gen = progress.generation || 0
+        const total = progress.total || config.value.generations
+        ElMessage.info({ message: `进化中... 第 ${gen}/${total} 代`, duration: 3000, showClose: false })
+      }
+    } catch (e) {
+      // 网络错误不停止轮询
+    }
+  }, 5000)  // 每 5 秒轮询一次
 }
 
 const applyResult = async () => {

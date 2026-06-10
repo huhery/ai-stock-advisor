@@ -69,6 +69,12 @@ public class BacktestController {
         return Result.success(doGet(url));
     }
 
+    @GetMapping("/status")
+    public Result<JSONObject> getStatus() {
+        String url = config.getDataServiceUrl() + "/api/backtest/status";
+        return Result.success(doGet(url));
+    }
+
     private JSONObject doGet(String url) {
         try {
             Request request = new Request.Builder().url(url).get().build();

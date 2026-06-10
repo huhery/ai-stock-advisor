@@ -179,15 +179,12 @@ def run_backtest(
     target_avg_return: float = 5.0,
     periods: str = None
 ):
-    """启动回测进化优化
+    """启动回测进化优化（异步执行）
 
-    Args:
-        generations: 迭代代数（默认20）
-        target_win_rate: 目标胜率（默认65%）
-        target_avg_return: 目标平均收益（默认5%）
-        periods: 逗号分隔的时期名（如 "牛市_2020,熊市_2022"），为空则全部
+    立即返回任务ID，后台执行进化。通过 /api/backtest/status 查询进度。
     """
     from app.learning.backtester import run_evolution, MARKET_PERIODS, save_backtest_result
+    import threading
 
     # 解析时期
     selected_periods = MARKET_PERIODS
@@ -197,17 +194,57 @@ def run_backtest(
         if not selected_periods:
             return {"code": -1, "message": f"无效的时期名，可选: {list(MARKET_PERIODS.keys())}"}
 
-    result = run_evolution(
-        periods=selected_periods,
-        generations=generations,
-        target_win_rate=target_win_rate,
-        target_avg_return=target_avg_return
-    )
+    # 检查是否已有任务在运行
+    if hasattr(app, '_backtest_running') and app._backtest_running:
+        return {"code": -1, "message": "已有回测任务在运行中，请等待完成"}
 
-    # 保存结果
-    save_backtest_result(result, selected_periods.keys())
+    # 后台线程执行
+    def run_task():
+        app._backtest_running = True
+        app._backtest_progress = {"generation": 0, "total": generations, "status": "running"}
+        try:
+            def on_progress(gen, best):
+                app._backtest_progress = {
+                    "generation": gen,
+                    "total": generations,
+                    "status": "running",
+                    "current_best": best
+                }
 
-    return {"code": 0, "data": result}
+            result = run_evolution(
+                periods=selected_periods,
+                generations=generations,
+                target_win_rate=target_win_rate,
+                target_avg_return=target_avg_return,
+                callback=on_progress
+            )
+            save_backtest_result(result, selected_periods.keys())
+            app._backtest_progress = {
+                "generation": generations,
+                "total": generations,
+                "status": "completed",
+                "result": result
+            }
+        except Exception as e:
+            app._backtest_progress = {
+                "status": "failed",
+                "error": str(e)
+            }
+        finally:
+            app._backtest_running = False
+
+    thread = threading.Thread(target=run_task, daemon=True)
+    thread.start()
+
+    return {"code": 0, "message": "回测任务已启动，请通过 /api/backtest/status 查询进度"}
+
+
+@app.get("/api/backtest/status")
+def get_backtest_status():
+    """查询回测进度"""
+    if hasattr(app, '_backtest_progress'):
+        return {"code": 0, "data": app._backtest_progress}
+    return {"code": 0, "data": {"status": "idle", "message": "没有正在运行的回测任务"}}
 
 
 @app.post("/api/backtest/apply")

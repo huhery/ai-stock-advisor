@@ -5,6 +5,7 @@
 
 # Java
 backend/target/
+deploy/output/
 *.class
 *.jar
 

@@ -1,10 +1,10 @@
 import os
 
 
-MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
+MYSQL_HOST = os.getenv('MYSQL_HOST', '81.69.42.239')
 MYSQL_PORT = int(os.getenv('MYSQL_PORT', '3306'))
 MYSQL_USER = os.getenv('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'root123')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'AiStock2026!')
 MYSQL_DB = os.getenv('MYSQL_DB', 'ai_stock')
 
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')

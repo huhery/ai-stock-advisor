@@ -15,7 +15,10 @@ from app.stock_data.stock_pool import STOCK_POOL
 
 
 def get_kline_cached(stock_code, start_date, end_date):
-    """获取K线数据（优先缓存）
+    """获取K线数据（只读缓存，不调外部接口）
+
+    回测时只从 MySQL 缓存读取，避免被 AkShare 限流。
+    缓存没有数据就返回空，跳过该股票。
 
     Args:
         stock_code: 股票代码
@@ -26,19 +29,10 @@ def get_kline_cached(stock_code, start_date, end_date):
         DataFrame 包含列: 日期/开盘/收盘/最高/最低/成交量
         如果无数据返回空 DataFrame
     """
-    # 1. 从缓存读
     cached = _read_from_db(stock_code, start_date, end_date)
-    if cached is not None and len(cached) >= 15:
+    if cached is not None and len(cached) >= 5:
         return cached
-
-    # 2. 缓存不足，尝试从 AkShare 拉取
-    fresh = _fetch_from_akshare(stock_code, start_date, end_date)
-    if fresh is not None and not fresh.empty:
-        _save_to_db(stock_code, fresh)
-        return fresh
-
-    # 3. 都拿不到，返回缓存中有的
-    return cached if cached is not None else pd.DataFrame()
+    return pd.DataFrame()
 
 
 def prefetch_all(start_date='2020-01-01', end_date='2026-06-01'):
@@ -81,18 +75,38 @@ def get_cache_stats():
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT COUNT(DISTINCT stock_code) as stocks, COUNT(*) as rows FROM stock_kline_cache")
+            # 先确认表存在
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS stock_kline_cache (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    stock_code VARCHAR(10) NOT NULL,
+                    trade_date DATE NOT NULL,
+                    open_price DECIMAL(10,2),
+                    close_price DECIMAL(10,2),
+                    high_price DECIMAL(10,2),
+                    low_price DECIMAL(10,2),
+                    volume BIGINT,
+                    amount DECIMAL(20,2) DEFAULT 0,
+                    UNIQUE KEY uk_code_date (stock_code, trade_date),
+                    INDEX idx_code (stock_code)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            conn.commit()
+
+            cursor.execute("SELECT COUNT(DISTINCT stock_code) as stocks, COUNT(*) as rows_count FROM stock_kline_cache")
             stats = cursor.fetchone()
             cursor.execute("SELECT MIN(trade_date) as min_date, MAX(trade_date) as max_date FROM stock_kline_cache")
             dates = cursor.fetchone()
             return {
-                'cached_stocks': stats['stocks'] if stats else 0,
-                'total_rows': stats['rows'] if stats else 0,
+                'cached_stocks': stats.get('stocks', 0) if stats else 0,
+                'total_rows': stats.get('rows_count', 0) if stats else 0,
                 'date_range': {
-                    'from': str(dates['min_date']) if dates and dates['min_date'] else None,
-                    'to': str(dates['max_date']) if dates and dates['max_date'] else None,
+                    'from': str(dates.get('min_date', '')) if dates and dates.get('min_date') else None,
+                    'to': str(dates.get('max_date', '')) if dates and dates.get('max_date') else None,
                 }
             }
+    except Exception as e:
+        return {'error': str(e), 'cached_stocks': 0, 'total_rows': 0}
     finally:
         conn.close()
 

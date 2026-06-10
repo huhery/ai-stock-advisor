@@ -6,6 +6,14 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      '/api/backtest': {
+        target: 'http://localhost:8001',
+        changeOrigin: true
+      },
+      '/api/cache': {
+        target: 'http://localhost:8001',
+        changeOrigin: true
+      },
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true
