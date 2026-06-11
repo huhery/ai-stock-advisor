@@ -27,9 +27,9 @@ MARKET_PERIODS = {
 }
 
 # 进化算法参数
-POPULATION_SIZE = 20       # 种群大小
+POPULATION_SIZE = 8        # 种群大小（减小加速）
 MAX_GENERATIONS = 50       # 最大迭代代数
-MUTATION_RATE = 0.2        # 变异率
+MUTATION_RATE = 0.3        # 变异率
 CROSSOVER_RATE = 0.7       # 交叉率
 TARGET_WIN_RATE = 65.0     # 目标胜率 (%)
 TARGET_AVG_RETURN = 5.0    # 目标平均收益率 (%)
@@ -257,11 +257,11 @@ def evaluate_individual(individual, periods=None, max_stocks_per_period=30):
         total_days = (end_dt - start_dt).days
 
         period_trades = 0
-        # 每隔 7 天选一次股
-        for day_offset in range(0, min(total_days, 60), 7):
+        # 每隔 14 天选一次股（减少查询次数）
+        for day_offset in range(0, min(total_days, 42), 14):
             check_date = (start_dt + timedelta(days=day_offset)).strftime('%Y-%m-%d')
-            # 从股票池中随机抽样
-            sample_size = min(15, len(stocks))
+            # 从股票池中随机抽 8 只
+            sample_size = min(8, len(stocks))
             selected = random.sample(stocks, sample_size)
 
             for stock_code in selected:

@@ -331,3 +331,32 @@ def cache_stats():
     """查看缓存统计"""
     from app.stock_data.cache import get_cache_stats
     return {"code": 0, "data": get_cache_stats()}
+
+
+# ===== 微淼财务自由选股 API =====
+
+@app.get("/api/weimu/list")
+def get_weimu_list(date: str = None):
+    """获取微淼选股结果"""
+    from app.db import get_connection
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            if date:
+                cursor.execute(
+                    "SELECT * FROM weimu_recommendation WHERE recommend_date = %s ORDER BY score DESC",
+                    (date,)
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM weimu_recommendation WHERE recommend_date = (SELECT MAX(recommend_date) FROM weimu_recommendation) ORDER BY score DESC"
+                )
+            results = cursor.fetchall()
+            for r in results:
+                if r.get('created_at'):
+                    r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+                if r.get('recommend_date'):
+                    r['recommend_date'] = r['recommend_date'].strftime('%Y-%m-%d')
+            return {"code": 0, "data": results}
+    finally:
+        conn.close()

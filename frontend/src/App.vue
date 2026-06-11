@@ -18,6 +18,9 @@
         <el-menu-item index="/screening">
           <span>每日选股</span>
         </el-menu-item>
+        <el-menu-item index="/freedom">
+          <span>财务自由</span>
+        </el-menu-item>
         <el-menu-item index="/dashboard">
           <span>回测看板</span>
         </el-menu-item>
