@@ -140,27 +140,61 @@ def _read_from_db(stock_code, start_date, end_date):
 
 
 def _fetch_from_akshare(stock_code, start_date, end_date):
-    """从 AkShare 获取K线数据"""
+    """从东方财富获取K线数据（替代原 AkShare）
+
+    使用 Scrapling 的 Fetcher 发起请求，绕过 TLS 指纹检测。
+
+    @param stock_code 股票代码
+    @param start_date 开始日期 YYYY-MM-DD
+    @param end_date 结束日期 YYYY-MM-DD
+    @return DataFrame 或 None
+    @author honghui
+    @date 2026/06/11 10:00
+    """
     try:
-        import akshare as ak
-        start_fmt = start_date.replace('-', '')
-        end_fmt = end_date.replace('-', '')
-        df = ak.stock_zh_a_hist(
-            symbol=stock_code, period="daily",
-            start_date=start_fmt, end_date=end_fmt, adjust="qfq"
+        from app.crawler.scrapling_client import fetch_json
+
+        # 构造东方财富请求
+        secid = f'1.{stock_code}' if stock_code.startswith('6') else f'0.{stock_code}'
+        beg = start_date.replace('-', '')
+        end = end_date.replace('-', '')
+        url = (
+            f"https://push2his.eastmoney.com/api/qt/stock/kline/get"
+            f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
+            f"&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+            f"&klt=101&fqt=1&beg={beg}&end={end}"
         )
-        if df is not None and not df.empty:
-            # 统一列名（AkShare 返回的列名可能是中文）
-            col_map = {
-                '日期': '日期', '开盘': '开盘', '收盘': '收盘',
-                '最高': '最高', '最低': '最低', '成交量': '成交量', '成交额': '成交额'
-            }
-            df = df.rename(columns=col_map)
-            needed_cols = ['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额']
-            existing_cols = [c for c in needed_cols if c in df.columns]
-            return df[existing_cols]
+
+        data = fetch_json(url, timeout=15)
+        if not data:
+            return None
+
+        klines_raw = data.get('data', {})
+        if not klines_raw:
+            return None
+        klines = klines_raw.get('klines', [])
+        if not klines:
+            return None
+
+        # 解析为 DataFrame
+        rows = []
+        for line in klines:
+            parts = line.split(',')
+            if len(parts) >= 7:
+                rows.append({
+                    '日期': parts[0],
+                    '开盘': float(parts[1]),
+                    '收盘': float(parts[2]),
+                    '最高': float(parts[3]),
+                    '最低': float(parts[4]),
+                    '成交量': int(float(parts[5])),
+                    '成交额': float(parts[6]),
+                })
+
+        if rows:
+            return pd.DataFrame(rows)
     except Exception as e:
-        print(f"  AkShare 获取 {stock_code} 失败: {e}")
+        print(f"  东方财富获取 {stock_code} 失败: {e}")
     return None
 
 
