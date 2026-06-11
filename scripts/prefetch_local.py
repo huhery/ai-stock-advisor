@@ -1,20 +1,30 @@
-"""本地预缓存脚本 v4 — 使用腾讯财经HTTP接口
+"""本地预缓存脚本 v5 — 使用 Scrapling + 东方财富/新浪双源
 
-腾讯财经接口是纯 HTTP GET 请求，无需注册、不限IP、不限频率。
-浏览器都能打开的数据源，绝对不会被限制。
+通过 Scrapling 的 Fetcher（TLS 指纹模拟）请求东方财富和新浪财经 JSON 接口，
+获取历史 K 线数据并写入 MySQL 缓存。
 
 使用方法：
-    pip install requests pymysql cryptography
+    pip install "scrapling[fetchers]"
+    scrapling install
     python scripts/prefetch_local.py --host 81.69.42.239 --password AiStock2026!
+
+@author honghui
+@version 5.0
+@date 2026/06/11
 """
+import sys
+import os
 import time
 import argparse
 import pymysql
-import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# 股票池
-# 可以手动指定，也可以通过 --pool 参数选择自动获取
+# 将 data-service 加入 Python 路径，以便导入 scrapling_client
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'data-service'))
+from app.crawler.scrapling_client import fetch_json, _log
+
+
+# 股票池（与 data-service/app/stock_data/stock_pool.py 保持一致）
 STOCK_POOL = [
     '600519', '000858', '600036', '601318', '000333',
     '600900', '601166', '600276', '000651', '601888',
@@ -41,131 +51,196 @@ STOCK_POOL = [
 
 
 def get_all_a_stocks():
-    """从腾讯接口获取全部A股代码列表
+    """生成全部 A 股代码候选列表
 
-    通过沪深交易所的股票代码规则自动生成候选列表，
-    然后验证哪些是有效的。
+    @return 代码列表
+    @author honghui
+    @date 2026/06/11 10:00
     """
-    print("正在获取全部A股代码...")
     all_codes = []
-
-    # 沪市主板：600000-603999
     for prefix in ['600', '601', '603', '605']:
         for i in range(1000):
             all_codes.append(f'{prefix}{i:03d}')
-
-    # 深市主板：000001-000999
     for i in range(1, 1000):
         all_codes.append(f'000{i:03d}')
-
-    # 中小板：002001-002999
     for i in range(1, 1000):
         all_codes.append(f'002{i:03d}')
-
-    # 创业板：300001-301999
     for i in range(1, 2000):
         all_codes.append(f'30{i:04d}')
-
     return all_codes
 
 
-def get_stock_pool_from_web(pool_type='hs300'):
-    """从网络获取指定指数的成分股列表
+def get_stock_pool(pool_type='hs300'):
+    """获取股票池
 
-    用腾讯接口验证股票是否有效（返回K线数据）。
+    @param pool_type 池类型: hs300/all/custom
+    @return 代码列表
+    @author honghui
+    @date 2026/06/11 10:00
     """
-    if pool_type == 'custom':
-        return STOCK_POOL
-    elif pool_type == 'all':
-        # 获取全部A股——数量太多，实际中不建议
+    if pool_type == 'all':
         print("警告：全部A股约 5000 只，预缓存需要数小时")
         return get_all_a_stocks()
+    return STOCK_POOL
+
+
+def code_to_eastmoney_secid(code):
+    """转为东方财富 secid 格式：1.600519（沪）/ 0.000001（深）
+
+    @param code 股票代码
+    @return secid 字符串
+    @author honghui
+    @date 2026/06/11 10:00
+    """
+    if code.startswith('6'):
+        return f'1.{code}'
     else:
-        # 默认使用硬编码的池子
-        return STOCK_POOL
+        return f'0.{code}'
 
 
-def code_to_tencent(code):
-    """转为腾讯格式：sh600519 / sz000001"""
+def code_to_sina_symbol(code):
+    """转为新浪格式：sh600519 / sz000001
+
+    @param code 股票代码
+    @return 新浪格式代码
+    @author honghui
+    @date 2026/06/11 10:00
+    """
     if code.startswith('6'):
         return f'sh{code}'
     else:
         return f'sz{code}'
 
 
-def fetch_kline_tencent(stock_code, year_count=6):
-    """使用腾讯财经接口获取日K线
+def fetch_kline_eastmoney(stock_code, start_date, end_date):
+    """从东方财富获取日 K 线数据
 
-    接口：http://web.ifzq.gtimg.cn/appstock/app/fqkline/get
-    这是腾讯公开的股票数据接口，纯 HTTP GET。
-
-    带重试机制，失败后等待更长时间再试。
+    @param stock_code 股票代码
+    @param start_date 开始日期 YYYY-MM-DD
+    @param end_date 结束日期 YYYY-MM-DD
+    @return K 线数据列表，失败返回 None
+    @author honghui
+    @date 2026/06/11 10:00
     """
-    tc_code = code_to_tencent(stock_code)
-    all_data = []
-    seen_dates = set()
-    end = datetime.now()
-    max_retries = 3
+    secid = code_to_eastmoney_secid(stock_code)
+    beg = start_date.replace('-', '')
+    end = end_date.replace('-', '')
 
-    for i in range(year_count):
-        end_str = end.strftime('%Y-%m-%d')
-        url = (
-            f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-            f"?param={tc_code},day,,{end_str},320,qfq"
-        )
+    url = (
+        f"https://push2his.eastmoney.com/api/qt/stock/kline/get"
+        f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
+        f"&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+        f"&klt=101&fqt=1&beg={beg}&end={end}"
+    )
 
-        success = False
-        for retry in range(max_retries):
-            try:
-                resp = requests.get(url, timeout=15, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                })
-                if resp.status_code != 200:
-                    time.sleep(3)
-                    continue
+    data = fetch_json(url, timeout=15)
+    if not data:
+        return None
 
-                data = resp.json()
-                stock_data = data.get('data', {}).get(tc_code, {})
-                klines = stock_data.get('qfqday', stock_data.get('day', []))
+    klines_raw = data.get('data', {})
+    if not klines_raw:
+        return None
+    klines = klines_raw.get('klines', [])
+    if not klines:
+        return None
 
-                if not klines:
-                    break
+    result = []
+    for line in klines:
+        parts = line.split(',')
+        if len(parts) < 6:
+            continue
+        try:
+            result.append({
+                'date': parts[0],
+                'open': float(parts[1]),
+                'close': float(parts[2]),
+                'high': float(parts[3]),
+                'low': float(parts[4]),
+                'volume': int(float(parts[5])),
+            })
+        except (ValueError, IndexError):
+            continue
 
-                earliest = None
-                for k in klines:
-                    if len(k) >= 6 and k[0] not in seen_dates:
-                        seen_dates.add(k[0])
-                        all_data.append({
-                            'date': k[0],
-                            'open': float(k[1]),
-                            'close': float(k[2]),
-                            'high': float(k[3]),
-                            'low': float(k[4]),
-                            'volume': int(float(k[5])),
-                        })
-                        if earliest is None or k[0] < earliest:
-                            earliest = k[0]
+    return result if result else None
 
-                success = True
-                if earliest:
-                    end = datetime.strptime(earliest, '%Y-%m-%d') - timedelta(days=1)
-                break
 
-            except Exception as e:
-                wait = (retry + 1) * 5  # 5s, 10s, 15s
-                print(f"    重试 {retry+1}/{max_retries}，等待 {wait}s...")
-                time.sleep(wait)
+def fetch_kline_sina(stock_code, start_date, end_date):
+    """从新浪财经获取日 K 线数据（备用源）
 
-        if not success:
-            break
+    @param stock_code 股票代码
+    @param start_date 开始日期 YYYY-MM-DD
+    @param end_date 结束日期 YYYY-MM-DD
+    @return K 线数据列表，失败返回 None
+    @author honghui
+    @date 2026/06/11 10:00
+    """
+    symbol = code_to_sina_symbol(stock_code)
+    url = (
+        f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
+        f"/CN_MarketData.getKLineData"
+        f"?symbol={symbol}&scale=240&ma=no&datalen=1500"
+    )
 
-        time.sleep(2)  # 每次分段请求间隔 2 秒
+    data = fetch_json(url, timeout=15)
+    if not data or not isinstance(data, list):
+        return None
 
-    all_data.sort(key=lambda x: x['date'])
-    return all_data
+    result = []
+    for item in data:
+        try:
+            trade_date = item.get('day', '')[:10]
+            if trade_date < start_date or trade_date > end_date:
+                continue
+            result.append({
+                'date': trade_date,
+                'open': float(item.get('open', 0)),
+                'close': float(item.get('close', 0)),
+                'high': float(item.get('high', 0)),
+                'low': float(item.get('low', 0)),
+                'volume': int(float(item.get('volume', 0))),
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return result if result else None
+
+
+def fetch_kline(stock_code, start_date, end_date):
+    """获取日 K 线数据（双源兜底）
+
+    @param stock_code 股票代码
+    @param start_date 开始日期
+    @param end_date 结束日期
+    @return K 线数据列表，全部失败返回空列表
+    @author honghui
+    @date 2026/06/11 10:00
+    """
+    data = fetch_kline_eastmoney(stock_code, start_date, end_date)
+    if data:
+        return data
+
+    _log(f"{stock_code}: 东方财富失败，切换新浪...", '')
+
+    data = fetch_kline_sina(stock_code, start_date, end_date)
+    if data:
+        return data
+
+    _log(f"{stock_code}: 双源均失败", '')
+    return []
 
 
 def get_connection(host, port, user, password, database):
+    """获取 MySQL 连接
+
+    @param host 主机
+    @param port 端口
+    @param user 用户名
+    @param password 密码
+    @param database 数据库名
+    @return pymysql 连接对象
+    @author honghui
+    @date 2026/06/11 10:00
+    """
     return pymysql.connect(
         host=host, port=port, user=user,
         password=password, database=database,
@@ -174,7 +249,12 @@ def get_connection(host, port, user, password, database):
 
 
 def ensure_table(conn):
-    """确保缓存表存在"""
+    """确保缓存表存在
+
+    @param conn 数据库连接
+    @author honghui
+    @date 2026/06/11 10:00
+    """
     with conn.cursor() as cursor:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS stock_kline_cache (
@@ -194,8 +274,16 @@ def ensure_table(conn):
     conn.commit()
 
 
-def save_to_db(conn, stock_code, data_list, start_date, end_date):
-    """写入数据库"""
+def save_to_db(conn, stock_code, data_list):
+    """写入数据库
+
+    @param conn 数据库连接
+    @param stock_code 股票代码
+    @param data_list K 线数据列表
+    @return 成功写入条数
+    @author honghui
+    @date 2026/06/11 10:00
+    """
     count = 0
     with conn.cursor() as cursor:
         sql = """INSERT IGNORE INTO stock_kline_cache
@@ -203,10 +291,6 @@ def save_to_db(conn, stock_code, data_list, start_date, end_date):
                   high_price, low_price, volume, amount)
                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"""
         for row in data_list:
-            # 过滤日期范围
-            if row['date'] < start_date or row['date'] > end_date:
-                continue
-            # 过滤停牌数据
             if row['close'] <= 0:
                 continue
             try:
@@ -223,25 +307,36 @@ def save_to_db(conn, stock_code, data_list, start_date, end_date):
     return count
 
 
-def test_connection():
-    """测试腾讯接口是否可达"""
-    print("测试腾讯财经接口...")
-    try:
-        url = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600519,day,,,5,qfq"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if 'data' in data:
-                print("  ✓ 腾讯财经接口连接成功\n")
-                return True
-        print(f"  ✗ 返回异常: {resp.status_code}")
-    except Exception as e:
-        print(f"  ✗ 连接失败: {e}")
+def test_data_source():
+    """测试数据源是否可达
+
+    @return 是否至少有一个源可用
+    @author honghui
+    @date 2026/06/11 10:00
+    """
+    print("测试数据源连通性...")
+
+    data = fetch_kline_eastmoney('600519', '2026-06-01', '2026-06-10')
+    if data:
+        print(f"  ✓ 东方财富接口连接成功（茅台 {len(data)} 条数据）\n")
+        return True
+
+    data = fetch_kline_sina('600519', '2026-06-01', '2026-06-10')
+    if data:
+        print(f"  ✓ 新浪财经接口连接成功（茅台 {len(data)} 条数据）\n")
+        return True
+
+    print("  ✗ 所有数据源均不可达\n")
     return False
 
 
 def main():
-    parser = argparse.ArgumentParser(description='使用腾讯财经接口预缓存K线数据')
+    """主入口
+
+    @author honghui
+    @date 2026/06/11 10:00
+    """
+    parser = argparse.ArgumentParser(description='使用 Scrapling + 东方财富/新浪 预缓存K线数据')
     parser.add_argument('--host', default='81.69.42.239', help='MySQL主机地址')
     parser.add_argument('--port', type=int, default=3306, help='MySQL端口')
     parser.add_argument('--user', default='root', help='MySQL用户名')
@@ -249,18 +344,18 @@ def main():
     parser.add_argument('--database', default='ai_stock', help='数据库名')
     parser.add_argument('--start', default='2020-01-01', help='开始日期')
     parser.add_argument('--end', default='2026-06-01', help='结束日期')
-    parser.add_argument('--years', type=int, default=6, help='获取最近几年数据')
     parser.add_argument('--pool', default='hs300',
                         choices=['hs300', 'all', 'custom'],
                         help='股票池: hs300(默认105只) / all(全A股约5000只) / custom(自定义)')
     parser.add_argument('--count', type=int, default=0, help='限制缓存数量（0=不限）')
     args = parser.parse_args()
 
-    # 测试接口
-    if not test_connection():
-        print("腾讯财经接口无法访问，请检查网络")
+    # 测试数据源
+    if not test_data_source():
+        print("数据源不可达，请检查网络")
         return
 
+    # 连接数据库
     print(f"连接 MySQL: {args.host}:{args.port}/{args.database}")
     try:
         conn = get_connection(args.host, args.port, args.user, args.password, args.database)
@@ -271,7 +366,7 @@ def main():
     ensure_table(conn)
 
     # 获取股票池
-    pool = get_stock_pool_from_web(args.pool)
+    pool = get_stock_pool(args.pool)
     if args.count > 0:
         pool = pool[:args.count]
     total = len(pool)
@@ -280,12 +375,11 @@ def main():
 
     print(f"开始预缓存 {total} 只股票 ({args.start} ~ {args.end})...\n")
 
-    # 查询已缓存的股票（断点续传）
+    # 断点续传：查询已缓存的股票
     cached_stocks = set()
     with conn.cursor() as cursor:
         cursor.execute("SELECT DISTINCT stock_code FROM stock_kline_cache WHERE trade_date >= %s", (args.start,))
         for row in cursor.fetchall():
-            # row 可能是 tuple 或 dict
             cached_stocks.add(row[0] if isinstance(row, tuple) else row.get('stock_code', ''))
     if cached_stocks:
         print(f"  已缓存 {len(cached_stocks)} 只，将跳过\n")
@@ -296,25 +390,27 @@ def main():
             success += 1
             continue
 
-        data = fetch_kline_tencent(code, args.years)
+        data = fetch_kline(code, args.start, args.end)
         if data:
-            rows = save_to_db(conn, code, data, args.start, args.end)
+            rows = save_to_db(conn, code, data)
             if rows > 0:
                 success += 1
                 print(f"  [{i+1}/{total}] {code}: {rows} 条K线 ✓")
             else:
                 fail += 1
-                print(f"  [{i+1}/{total}] {code}: 日期范围内无数据 ✗")
+                print(f"  [{i+1}/{total}] {code}: 日期范围内无有效数据 ✗")
         else:
             fail += 1
             print(f"  [{i+1}/{total}] {code}: 获取失败 ✗")
-        time.sleep(3)  # 每只股票间隔 3 秒，避免被断开
+
+        time.sleep(3)
 
     conn.close()
 
     print(f"\n{'='*50}")
     print(f"完成! 成功: {success}, 失败: {fail}, 总计: {total}")
-    print(f"成功率: {success/total*100:.1f}%")
+    if total > 0:
+        print(f"成功率: {success/total*100:.1f}%")
 
 
 if __name__ == '__main__':

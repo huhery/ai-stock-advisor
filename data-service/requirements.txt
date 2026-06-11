@@ -8,3 +8,4 @@ cryptography==41.0.7
 sqlalchemy==2.0.23
 redis==5.0.1
 apscheduler==3.10.4
+scrapling[fetchers]>=0.2.9
