@@ -13,22 +13,30 @@ def startup():
     from app.learning.optimizer import weekly_optimize, ai_suggest_rules
     from app.screening.engine import run_screening
     from app.screening.signals import check_all_holdings
+    from app.learning.auto_evolution import run_weekly_evolution
 
-    # 每 5 分钟爬取政策资讯
-    scheduler.add_job(crawl_all_sources, 'interval', minutes=5, id='crawl_news')
+    # === 每日任务 ===
+    # 每日 9:30 爬取新闻（开盘后一次）
+    scheduler.add_job(crawl_all_sources, 'cron', hour=9, minute=30, id='crawl_news_am')
     # 每日 15:35 自动选股
     scheduler.add_job(run_screening, 'cron', hour=15, minute=35, id='daily_screening')
     # 每日 15:50 检查卖出信号
     scheduler.add_job(check_all_holdings, 'cron', hour=15, minute=50, id='check_sell')
     # 每日 16:00 跟踪推荐表现
     scheduler.add_job(track_recommendations, 'cron', hour=16, minute=0, id='daily_tracking')
-    # 每周日 20:00 优化规则权重
+
+    # === 每周自动进化（核心） ===
+    # 每周六 2:00 执行完整进化流程（回测+优化+应用+AI分析）
+    scheduler.add_job(run_weekly_evolution, 'cron', day_of_week='sat', hour=2, id='weekly_evolution')
+    # 每周日 20:00 基于实盘数据微调权重
     scheduler.add_job(weekly_optimize, 'cron', day_of_week='sun', hour=20, id='weekly_optimize')
     # 每周日 20:30 AI 建议新规则
     scheduler.add_job(ai_suggest_rules, 'cron', day_of_week='sun', hour=20, minute=30, id='ai_suggest')
 
     scheduler.start()
-    print("定时任务已启动")
+    print("定时任务已启动:")
+    print("  每日: 9:30新闻 | 15:35选股 | 15:50卖出检查 | 16:00跟踪")
+    print("  每周: 周六2:00自动进化 | 周日20:00微调权重 | 周日20:30 AI建议")
 
 
 @app.on_event("shutdown")
@@ -79,6 +87,13 @@ def get_history_screening(date: str):
     """获取历史选股结果"""
     from app.screening.engine import get_history_recommendations
     return {"code": 0, "data": get_history_recommendations(date)}
+
+
+@app.get("/api/screening/dates")
+def get_screening_dates():
+    """获取所有有选股记录的日期列表"""
+    from app.screening.engine import get_available_dates
+    return {"code": 0, "data": get_available_dates()}
 
 
 @app.post("/api/screening/run")
@@ -168,6 +183,56 @@ def trigger_check_sell():
     from app.screening.signals import check_all_holdings
     check_all_holdings()
     return {"code": 0, "message": "卖出信号检查完成"}
+
+
+# ===== 自动进化 API =====
+
+@app.post("/api/evolution/run")
+def trigger_evolution():
+    """手动触发一次完整的自动进化流程"""
+    from app.learning.auto_evolution import run_weekly_evolution
+    import threading
+
+    if hasattr(app, '_evolution_running') and app._evolution_running:
+        return {"code": -1, "message": "已有进化任务在运行中"}
+
+    def run_task():
+        app._evolution_running = True
+        try:
+            run_weekly_evolution()
+        finally:
+            app._evolution_running = False
+
+    thread = threading.Thread(target=run_task, daemon=True)
+    thread.start()
+    return {"code": 0, "message": "自动进化已启动，后台运行中"}
+
+
+@app.get("/api/evolution/log")
+def get_evolution_log():
+    """查看进化日志"""
+    from app.db import get_connection
+    import json as json_lib
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT * FROM evolution_log
+                             ORDER BY created_at DESC LIMIT 10""")
+            results = cursor.fetchall()
+            for r in results:
+                if r.get('created_at'):
+                    r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+                if r.get('start_time'):
+                    r['start_time'] = r['start_time'].strftime('%Y-%m-%d %H:%M:%S')
+                if r.get('end_time'):
+                    r['end_time'] = r['end_time'].strftime('%Y-%m-%d %H:%M:%S')
+                if r.get('detail') and isinstance(r['detail'], str):
+                    r['detail'] = json_lib.loads(r['detail'])
+            return {"code": 0, "data": results}
+    except Exception:
+        return {"code": 0, "data": []}
+    finally:
+        conn.close()
 
 
 # ===== 回测进化 API =====
@@ -335,6 +400,30 @@ def cache_stats():
 
 # ===== 微淼财务自由选股 API =====
 
+@app.post("/api/weimu/run")
+def trigger_weimu_screening():
+    """手动触发微淼财务自由选股（异步执行，耗时较长）"""
+    from app.weimu.runner import run_async
+    ok, message = run_async()
+    code = 0 if ok else -1
+    return {"code": code, "message": message}
+
+
+@app.post("/api/weimu/quick")
+def trigger_weimu_quick():
+    """快速模式：仅对上次精选结果重算估值"""
+    from app.weimu.runner import run_quick
+    results = run_quick()
+    return {"code": 0, "message": f"估值更新完成，{len(results)} 条记录"}
+
+
+@app.get("/api/weimu/status")
+def get_weimu_status():
+    """查询微淼选股进度"""
+    from app.weimu.runner import get_progress
+    return {"code": 0, "data": get_progress()}
+
+
 @app.get("/api/weimu/list")
 def get_weimu_list(date: str = None):
     """获取微淼选股结果"""
@@ -358,5 +447,23 @@ def get_weimu_list(date: str = None):
                 if r.get('recommend_date'):
                     r['recommend_date'] = r['recommend_date'].strftime('%Y-%m-%d')
             return {"code": 0, "data": results}
+    finally:
+        conn.close()
+
+
+@app.get("/api/weimu/history")
+def get_weimu_history():
+    """获取微淼选股历史日期列表"""
+    from app.db import get_connection
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT DISTINCT recommend_date
+                             FROM weimu_recommendation
+                             ORDER BY recommend_date DESC LIMIT 30""")
+            results = cursor.fetchall()
+            return {"code": 0, "data": [
+                r['recommend_date'].strftime('%Y-%m-%d') for r in results if r.get('recommend_date')
+            ]}
     finally:
         conn.close()

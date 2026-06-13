@@ -15,6 +15,7 @@
 import sys
 import os
 import time
+import random
 import argparse
 import pymysql
 from datetime import datetime
@@ -403,7 +404,7 @@ def main():
             fail += 1
             print(f"  [{i+1}/{total}] {code}: 获取失败 ✗")
 
-        time.sleep(3)
+        time.sleep(random.uniform(3, 5))
 
     conn.close()
 

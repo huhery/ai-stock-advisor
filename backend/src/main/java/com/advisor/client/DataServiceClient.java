@@ -79,6 +79,30 @@ public class DataServiceClient {
     }
 
     /**
+     * 获取有选股记录的日期列表
+     */
+    public List<String> getScreeningDates() {
+        String url = config.getDataServiceUrl() + "/api/screening/dates";
+        try {
+            Request request = new Request.Builder().url(url).get().build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (response.isSuccessful() && response.body() != null) {
+                    byte[] bytes = response.body().bytes();
+                    String body = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    JSONObject json = JSON.parseObject(body);
+                    JSONArray data = json.getJSONArray("data");
+                    if (data != null) {
+                        return data.toJavaList(String.class);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return Collections.emptyList();
+    }
+
+    /**
      * 获取筛选规则
      */
     public List<JSONObject> getScreeningRules() {

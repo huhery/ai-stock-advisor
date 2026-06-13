@@ -2,14 +2,19 @@
 
 使用 Scrapling 爬取国内外政策及财经资讯网站，提取最新资讯入库。
 数据源覆盖国务院、证监会、央行、Reuters、CNBC、SCMP、Investing.com、美联储。
+爬取后自动调用 LLM 分析新闻对 A 股板块的影响，提取关键词和受益板块。
 
 @author honghui
-@version 2.0
+@version 2.1
 @date 2026/06/11
 """
+import json
+import re
+import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from app.db import get_connection
+from app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from app.crawler.scrapling_client import fetch_url
 
 
@@ -394,20 +399,57 @@ def save_news(item):
         conn.close()
 
 
+def save_news_return_new(item):
+    """保存资讯到数据库，返回是否为新增记录
+
+    @param item 资讯 dict
+    @return True 如果是新增，False 如果已存在
+    @author honghui
+    @date 2026/06/11
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """INSERT IGNORE INTO policy_news
+                     (source, title, url, publish_time, category, language)
+                     VALUES (%s, %s, %s, %s, %s, %s)"""
+            cursor.execute(sql, (
+                item['source'],
+                item['title'],
+                item['url'],
+                item['publish_time'],
+                item.get('category', 'domestic'),
+                item.get('language', 'zh'),
+            ))
+            is_new = cursor.rowcount > 0
+        conn.commit()
+        return is_new
+    finally:
+        conn.close()
+
+
 def crawl_all_sources():
-    """爬取所有数据源（定时任务调用）
+    """爬取所有数据源，并对新入库的新闻进行 LLM 分析
 
     @author honghui
     @date 2026/06/11 10:00
     """
     total = 0
+    new_items = []
     for name, config in SOURCES.items():
         items = crawl_source(name, config)
         for item in items:
-            save_news(item)
+            is_new = save_news_return_new(item)
+            if is_new:
+                new_items.append(item)
         total += len(items)
         print(f"[{datetime.now()}] {name}: {len(items)} 条")
-    print(f"[{datetime.now()}] 爬取完成，共 {total} 条资讯")
+    print(f"[{datetime.now()}] 爬取完成，共 {total} 条资讯，新增 {len(new_items)} 条")
+
+    # 对新入库的新闻批量调用 LLM 分析板块影响
+    if new_items:
+        analyze_news_impact(new_items)
+
 
 
 def get_latest_news(limit=20):
@@ -458,5 +500,115 @@ def search_news(keyword, limit=20):
                 if r.get('created_at'):
                     r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
             return results
+    finally:
+        conn.close()
+
+
+# ========== LLM 新闻影响分析 ==========
+
+NEWS_ANALYSIS_PROMPT = """你是一位资深A股研究员。请分析以下新闻标题对A股市场的影响。
+
+新闻列表：
+{news_list}
+
+请对每条新闻分析：
+1. 提取中文关键词（用于匹配A股股票名称和板块概念）
+2. 判断利好哪些A股板块/概念
+
+要求：
+- 关键词必须是中文，即使原始新闻是英文也要翻译为中文关键词
+- 关键词应包含：行业词（如"新能源"、"半导体"）、概念词（如"降息"、"芯片"）、公司简称
+- 板块使用A股常见板块名称，如：银行、地产、新能源、半导体、医药、军工、消费、有色金属、石油化工、科技、汽车等
+
+请严格按以下JSON格式输出，不要有其他内容：
+[
+  {{"title": "原始标题", "keywords": "关键词1,关键词2,关键词3", "sectors": "板块1,板块2"}}
+]
+"""
+
+
+def analyze_news_impact(news_items):
+    """调用 LLM 分析新闻对 A 股板块的影响，回写 keywords 和 related_sectors
+
+    每次最多分析 20 条新闻（控制 token 用量）。
+
+    @param news_items 新闻列表
+    @author honghui
+    @date 2026/06/11
+    """
+    if not LLM_API_KEY:
+        print("  [跳过] 未配置 LLM_API_KEY，无法分析新闻影响")
+        return
+
+    # 分批处理，每批最多 20 条
+    batch_size = 20
+    for i in range(0, len(news_items), batch_size):
+        batch = news_items[i:i + batch_size]
+        _analyze_batch(batch)
+
+
+def _analyze_batch(batch):
+    """分析一批新闻"""
+    # 组装新闻列表文本
+    news_text = ""
+    for idx, item in enumerate(batch, 1):
+        source = item.get('source', '未知')
+        category = item.get('category', 'domestic')
+        lang_hint = "（英文）" if item.get('language') == 'en' else ""
+        news_text += f"{idx}. [{source}]{lang_hint} {item['title']}\n"
+
+    prompt = NEWS_ANALYSIS_PROMPT.format(news_list=news_text)
+
+    try:
+        headers = {
+            'Authorization': f'Bearer {LLM_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        body = {
+            'model': LLM_MODEL,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.3,
+        }
+        resp = requests.post(
+            f'{LLM_BASE_URL}/chat/completions',
+            headers=headers,
+            json=body,
+            timeout=60
+        )
+        if resp.status_code != 200:
+            print(f"  [LLM] 分析失败，状态码: {resp.status_code}")
+            return
+
+        content = resp.json()['choices'][0]['message']['content']
+        # 提取 JSON
+        json_match = re.search(r'\[.*\]', content, re.DOTALL)
+        if not json_match:
+            print("  [LLM] 返回内容无法解析为JSON")
+            return
+
+        results = json.loads(json_match.group())
+        _update_news_analysis(batch, results)
+        print(f"  [LLM] 成功分析 {len(results)} 条新闻的板块影响")
+
+    except Exception as e:
+        print(f"  [LLM] 新闻分析异常: {e}")
+
+
+def _update_news_analysis(batch, results):
+    """将 LLM 分析结果回写到数据库"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            for result in results:
+                title = result.get('title', '')
+                keywords = result.get('keywords', '')
+                sectors = result.get('sectors', '')
+                if not title or (not keywords and not sectors):
+                    continue
+                sql = """UPDATE policy_news
+                         SET keywords = %s, related_sectors = %s
+                         WHERE title = %s AND keywords IS NULL"""
+                cursor.execute(sql, (keywords, sectors, title))
+        conn.commit()
     finally:
         conn.close()

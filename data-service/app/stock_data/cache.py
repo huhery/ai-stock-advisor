@@ -140,61 +140,61 @@ def _read_from_db(stock_code, start_date, end_date):
 
 
 def _fetch_from_akshare(stock_code, start_date, end_date):
-    """从东方财富获取K线数据（替代原 AkShare）
+    """从腾讯HTTP接口获取K线数据（替代东方财富HTTPS）
 
-    使用 Scrapling 的 Fetcher 发起请求，绕过 TLS 指纹检测。
+    腾讯接口走HTTP，不受代理SSL干扰。
+    注意：腾讯接口只能获取最近N天数据，不支持指定日期范围，
+    所以这里拉取最大天数（320天约一年半）然后按日期过滤。
 
     @param stock_code 股票代码
     @param start_date 开始日期 YYYY-MM-DD
     @param end_date 结束日期 YYYY-MM-DD
     @return DataFrame 或 None
-    @author honghui
-    @date 2026/06/11 10:00
     """
     try:
-        from app.crawler.scrapling_client import fetch_json
+        import requests
+        HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-        # 构造东方财富请求
-        secid = f'1.{stock_code}' if stock_code.startswith('6') else f'0.{stock_code}'
-        beg = start_date.replace('-', '')
-        end = end_date.replace('-', '')
-        url = (
-            f"https://push2his.eastmoney.com/api/qt/stock/kline/get"
-            f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
-            f"&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
-            f"&klt=101&fqt=1&beg={beg}&end={end}"
-        )
+        # 腾讯K线接口（HTTP，稳定）
+        if stock_code.startswith('6'):
+            tc_code = f'sh{stock_code}'
+        else:
+            tc_code = f'sz{stock_code}'
 
-        data = fetch_json(url, timeout=15)
-        if not data:
+        # 拉取尽可能多的数据（最多320天）
+        url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={tc_code},day,,,320,qfq"
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code != 200:
             return None
 
-        klines_raw = data.get('data', {})
-        if not klines_raw:
-            return None
-        klines = klines_raw.get('klines', [])
+        data = resp.json()
+        stock_data = data.get('data', {}).get(tc_code, {})
+        klines = stock_data.get('qfqday', stock_data.get('day', []))
         if not klines:
             return None
 
-        # 解析为 DataFrame
         rows = []
-        for line in klines:
-            parts = line.split(',')
-            if len(parts) >= 7:
+        for k in klines:
+            if len(k) >= 6:
+                trade_date = k[0]
+                # 按日期范围过滤
+                if trade_date < start_date or trade_date > end_date:
+                    continue
                 rows.append({
-                    '日期': parts[0],
-                    '开盘': float(parts[1]),
-                    '收盘': float(parts[2]),
-                    '最高': float(parts[3]),
-                    '最低': float(parts[4]),
-                    '成交量': int(float(parts[5])),
-                    '成交额': float(parts[6]),
+                    '日期': trade_date,
+                    '开盘': float(k[1]),
+                    '收盘': float(k[2]),
+                    '最高': float(k[3]),
+                    '最低': float(k[4]),
+                    '成交量': int(float(k[5])),
+                    '成交额': 0,
                 })
 
         if rows:
             return pd.DataFrame(rows)
     except Exception as e:
-        print(f"  东方财富获取 {stock_code} 失败: {e}")
+        # 静默失败，不打印大量错误
+        pass
     return None
 
 

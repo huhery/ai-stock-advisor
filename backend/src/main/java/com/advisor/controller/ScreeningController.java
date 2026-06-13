@@ -26,6 +26,11 @@ public class ScreeningController {
         return Result.success(dataServiceClient.getHistoryScreening(date));
     }
 
+    @GetMapping("/dates")
+    public Result<List<String>> getDates() {
+        return Result.success(dataServiceClient.getScreeningDates());
+    }
+
     @GetMapping("/rules")
     public Result<List<JSONObject>> getRules() {
         return Result.success(dataServiceClient.getScreeningRules());

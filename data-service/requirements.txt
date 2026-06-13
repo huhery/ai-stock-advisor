@@ -9,3 +9,9 @@ sqlalchemy==2.0.23
 redis==5.0.1
 apscheduler==3.10.4
 scrapling[fetchers]>=0.2.9
+
+# Kronos AI 价格预测依赖
+torch>=2.0.0
+einops==0.8.1
+huggingface_hub==0.33.1
+safetensors==0.6.2

@@ -17,6 +17,7 @@ export const getChatHistory = (limit = 50) => api.get(`/chat/history?limit=${lim
 export const getTodayScreening = () => api.get('/screening/today')
 export const getHistoryScreening = (date) => api.get(`/screening/history?date=${date}`)
 export const getScreeningRules = () => api.get('/screening/rules')
+export const getScreeningDates = () => api.get('/screening/dates')
 export const triggerScreening = () => api.post('/screening/run')
 
 // 学习

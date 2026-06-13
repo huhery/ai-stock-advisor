@@ -27,5 +27,5 @@ advisor:
   data-service-url: http://localhost:8001
   llm:
     api-key: ${LLM_API_KEY:your-api-key}
-    base-url: https://api.deepseek.com/v1
-    model: deepseek-chat
+    base-url: ${LLM_BASE_URL:https://integrate.api.nvidia.com/v1}
+    model: ${LLM_MODEL:meta/llama-3.1-70b-instruct}
