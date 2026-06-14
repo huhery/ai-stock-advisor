@@ -28,6 +28,22 @@ def main():
     print("=" * 60)
     print()
 
+    # 先展示市场PE分析
+    from app.weimu.valuation import get_market_analysis
+    print("  【市场估值分析】")
+    analysis = get_market_analysis()
+    pe_info = analysis['analysis']
+    print(f"    深证A股当前PE: {analysis['market_pe']}")
+    print(f"    10年国债收益率: {analysis['bond_yield']}%")
+    print(f"    估值水平: {pe_info['level']}")
+    print(f"    交易建议: {pe_info['advice']}")
+    print(f"    适合买入: {'是' if pe_info['suitable_for_buying'] else '否'}")
+    if pe_info['should_sell']:
+        print(f"    ⚠️  警告: 当前市场严重高估，建议卖出！")
+    print()
+    print(f"    详细说明: {pe_info['description']}")
+    print()
+
     if quick:
         results = run_quick()
     else:

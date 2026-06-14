@@ -33,6 +33,11 @@ def startup():
     # 每周日 20:30 AI 建议新规则
     scheduler.add_job(ai_suggest_rules, 'cron', day_of_week='sun', hour=20, minute=30, id='ai_suggest')
 
+    # === 微淼财务自由模块进化 ===
+    from app.weimu.evolution import run_weimu_evolution
+    # 每周三 3:00 执行财务自由模块自动进化（分析政策+行情+调整参数）
+    scheduler.add_job(run_weimu_evolution, 'cron', day_of_week='wed', hour=3, id='weimu_evolution')
+
     scheduler.start()
     print("定时任务已启动:")
     print("  每日: 9:30新闻 | 15:35选股 | 15:50卖出检查 | 16:00跟踪")
@@ -467,3 +472,79 @@ def get_weimu_history():
             ]}
     finally:
         conn.close()
+
+
+@app.get("/api/weimu/market-analysis")
+def get_weimu_market_analysis():
+    """获取当前市场PE估值分析
+
+    返回深证A股当前PE值、所处区间、以及是否适合交易的建议。
+    基于微淼课程的PE区间理论：
+    - PE < 20: 低估，适合买入
+    - PE 20-40: 合理，持有等待
+    - PE > 40: 偏高，谨慎或卖出
+    - PE > 60: 严重高估，应卖出
+    """
+    from app.weimu.valuation import get_market_analysis
+    result = get_market_analysis()
+    return {"code": 0, "data": result}
+
+
+@app.get("/api/weimu/allocation")
+def get_weimu_allocation(capital: float = 200000, expense: float = 5000):
+    """获取资产配置建议
+
+    根据投入资金和当前市场环境，基于微淼课程的3-3-1工具体系，
+    给出个性化的资产配置方案。
+
+    Args:
+        capital: 总投资资金（默认20万）
+        expense: 月生活支出（默认5000元，用于计算应急资金）
+    """
+    from app.weimu.allocation import generate_allocation_advice
+    result = generate_allocation_advice(capital, expense)
+    return {"code": 0, "data": result}
+
+
+@app.post("/api/weimu/evolve")
+def trigger_weimu_evolution():
+    """手动触发微淼模块自动进化
+
+    分析最新政策、市场行情，调整筛选参数和投资建议。
+    """
+    from app.weimu.evolution import run_weimu_evolution
+    import threading
+
+    def task():
+        run_weimu_evolution()
+
+    thread = threading.Thread(target=task, daemon=True)
+    thread.start()
+    return {"code": 0, "message": "进化任务已启动"}
+
+
+@app.get("/api/weimu/advice")
+def get_weimu_advice():
+    """获取最新的AI进化投资建议
+
+    包含：投资注意事项、风险警示、配置建议
+    """
+    from app.weimu.evolution import get_latest_advice
+    return {"code": 0, "data": get_latest_advice()}
+
+
+@app.get("/api/weimu/evolution-log")
+def get_weimu_evolution_log():
+    """获取进化历史日志"""
+    from app.weimu.evolution import get_evolution_history
+    return {"code": 0, "data": get_evolution_history()}
+
+
+@app.get("/api/weimu/tools")
+def get_weimu_tools():
+    """获取所有投资工具推荐（REITs/货基/债基/逆回购）
+
+    从公开接口实时获取各类工具的排行和利率数据，给出具体买哪个的建议。
+    """
+    from app.weimu.tools_screener import get_all_tools_recommendations
+    return {"code": 0, "data": get_all_tools_recommendations()}

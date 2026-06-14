@@ -1,13 +1,15 @@
 """微淼财务自由选股引擎
 
 从全A股中按照微淼课程的财务指标逐步筛选：
-  第一轮（海选）：ROE/现金含量/毛利率 基础过滤
+  第零轮（预筛选）：用东方财富批量选股接口快速过滤，秒级完成
+  第一轮（海选）：对预筛选通过的股票拉详细财务数据验证
   第二轮（精选）：更严格的财务标准 + 分红要求
   第三轮（估值）：市盈率 + 股息率判断买卖时机
 
 数据来源：东方财富证券API（财务数据）+ 腾讯行情接口（估值/行情）
 """
 import time
+import re
 import json
 from datetime import datetime, date
 from app.stock_data.stock_pool import STOCK_POOL
@@ -19,13 +21,22 @@ from app.db import get_connection
 
 
 # ===== 海选标准（宽松，用于初筛） =====
+# 2024-2026 更新说明：
+# - 注册制后A股从3400扩容到5500+，上市初期财报"化妆"更普遍
+# - 退市新规强化（面值退市、市值退市），需排除小市值壳公司
+# - 国九条（2024.4）强调分红约束，连续不分红的公司将受监管限制
+# - 量化交易加剧短期波动，更适合长期持有好公司
 PRELIMINARY_ROE_MIN = 15.0          # 连续5年ROE > 15%
 PRELIMINARY_CASH_RATIO_MIN = 80.0   # 连续5年净利润现金含量 > 80%
 PRELIMINARY_GROSS_MARGIN_MIN = 30.0 # 连续5年毛利率 > 30%
 PRELIMINARY_MIN_YEARS = 5           # 需要至少5年数据
-MIN_LISTING_YEARS = 3               # 上市至少3年
+MIN_LISTING_YEARS = 5               # 上市至少5年（注册制后从3年提高到5年，防止IPO化妆）
 
 # ===== 精选标准（严格） =====
+# 2024-2026 更新：
+# - ROE阈值维持20%，但增加ROE稳定性考量（标准差不能太大）
+# - 分红要求提高：国九条后连续分红是基本要求，从5年提高关注度
+# - 增加"市值>100亿"隐性要求，避免面值退市/壳公司风险
 FINE_ROE_MIN = 20.0                 # ROE均值或最近一年 > 20%
 FINE_CASH_RATIO_AVG_MIN = 100.0     # 平均净利润现金含量 > 100%
 FINE_GROSS_MARGIN_MIN = 40.0        # 毛利率均值或最近一年 > 40%
@@ -51,19 +62,29 @@ def run_weimu_screening(callback=None):
     print(f"  股票池总数: {total}")
 
     if callback:
-        callback('init', 0, total, f'股票池 {total} 只，开始海选...')
+        callback('init', 0, total, f'股票池 {total} 只，开始预筛选...')
 
-    # ========== 第一轮：海选 ==========
-    print(f"  第一轮：海选（财务指标基础过滤）...")
+    # ========== 第零轮：批量预筛选（秒级完成） ==========
+    # 用东方财富批量选股接口快速筛出 ROE 较高的股票，大幅缩小范围
+    print(f"  第零轮：批量预筛选（快速排除不达标的股票）...")
+    pre_candidates = _batch_prefilter(stock_pool)
+    print(f"  预筛选完成: {len(pre_candidates)} 只通过（从 {total} 只中快速过滤）")
+
+    if callback:
+        callback('prefilter_done', len(pre_candidates), total,
+                 f'预筛选完成，{len(pre_candidates)} 只进入海选')
+
+    # ========== 第一轮：海选（只对预筛选通过的股票拉详细数据） ==========
+    print(f"  第一轮：海选（对 {len(pre_candidates)} 只拉取详细财务数据）...")
     preliminary_results = []
     failed_count = 0
 
-    for i, code in enumerate(stock_pool):
-        if (i + 1) % 100 == 0:
-            print(f"    进度: {i+1}/{total}, 通过: {len(preliminary_results)}, 失败: {failed_count}")
+    for i, code in enumerate(pre_candidates):
+        if (i + 1) % 20 == 0:
+            print(f"    进度: {i+1}/{len(pre_candidates)}, 通过: {len(preliminary_results)}")
             if callback:
-                callback('preliminary', i + 1, total,
-                         f'海选进度 {i+1}/{total}，已通过 {len(preliminary_results)} 只')
+                callback('preliminary', i + 1, len(pre_candidates),
+                         f'海选进度 {i+1}/{len(pre_candidates)}，已通过 {len(preliminary_results)} 只')
 
         # 获取财务指标
         indicators = get_finance_indicators(code)
@@ -94,7 +115,7 @@ def run_weimu_screening(callback=None):
         if not all(g >= PRELIMINARY_GROSS_MARGIN_MIN for g in gm_list[:PRELIMINARY_MIN_YEARS]):
             continue
 
-        # 海选条件4：连续分红 >= 3年（上市3年以上的代理指标）
+        # 海选条件4：连续分红 >= 5年
         dividend_years = indicators.get('continuous_dividend_years', 0)
         if dividend_years < MIN_LISTING_YEARS:
             continue
@@ -104,13 +125,13 @@ def run_weimu_screening(callback=None):
             'indicators': indicators,
         })
 
-        # 控制请求频率
-        time.sleep(0.8)
+        # 控制请求频率（对少量股票可以适当加快）
+        time.sleep(0.5)
 
-    print(f"  海选完成: {len(preliminary_results)} 只通过（共扫描 {total} 只）")
+    print(f"  海选完成: {len(preliminary_results)} 只通过")
 
     if callback:
-        callback('preliminary_done', total, total,
+        callback('preliminary_done', len(pre_candidates), len(pre_candidates),
                  f'海选完成，{len(preliminary_results)} 只通过')
 
     # ========== 第二轮：精选 ==========
@@ -178,6 +199,11 @@ def run_weimu_screening(callback=None):
     market_pe = get_market_pe()
     bond_yield = get_bond_yield()
     print(f"    深证A股整体PE: {market_pe}, 10年国债收益率: {bond_yield}%")
+
+    # 输出市场PE分析
+    from app.weimu.valuation import analyze_market_pe
+    market_analysis = analyze_market_pe(market_pe)
+    print(f"    市场估值判断: {market_analysis['level']} - {market_analysis['advice']}")
 
     final_results = []
     for item in fine_results:
@@ -321,3 +347,117 @@ def _save_results(results):
         conn.commit()
     finally:
         conn.close()
+
+
+def _batch_prefilter(stock_pool):
+    """批量预筛选：用东方财富选股接口快速过滤
+
+    利用东方财富的数据接口一次性获取全市场的 ROE、毛利率等关键指标，
+    快速排除明显不符合条件的股票。
+
+    这一步只需要 2-3 次 HTTP 请求，几秒钟即可将 4000+ 只股票缩减到 100-200 只。
+
+    Returns:
+        list: 通过预筛选的股票代码列表
+    """
+    try:
+        from curl_cffi import requests as http
+        IMPERSONATE = True
+    except ImportError:
+        import requests as http
+        IMPERSONATE = False
+
+    HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+    candidates = set()
+
+    # 方案1：东方财富选股器接口（批量获取高ROE股票）
+    # 条件：最近一年ROE > 15%，排除ST，排除科创板/北交所
+    try:
+        url = (
+            "http://datacenter.eastmoney.com/securities/api/data/get?"
+            "type=RPT_LICO_FN_CPD&sty=ALL&source=HSF10"
+            "&filter=(REPORTDATETYPE=%221%22)"  # 年报
+            "&p=1&ps=500&sr=-1&st=ROEJQ"  # 按ROE降序，取前500
+        )
+        if IMPERSONATE:
+            resp = http.get(url, headers=HEADERS, timeout=20, impersonate="chrome")
+        else:
+            resp = http.get(url, headers=HEADERS, timeout=20)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and data.get('result') and data['result'].get('data'):
+                items = data['result']['data']
+                for item in items:
+                    secucode = item.get('SECUCODE', '')
+                    roe = item.get('ROEJQ')
+                    gross_margin = item.get('XSMLL')
+
+                    if not secucode:
+                        continue
+                    code = secucode.split('.')[0]
+
+                    # 基础过滤
+                    if not (code.startswith('60') or code.startswith('00') or code.startswith('30')):
+                        continue
+
+                    # ROE预筛：最近一年ROE > 13%（比正式阈值略低，留余量）
+                    if roe is not None and float(roe) >= 13:
+                        # 毛利率预筛：> 25%（比正式阈值略低）
+                        if gross_margin is not None and float(gross_margin) >= 25:
+                            candidates.add(code)
+
+                print(f"    东方财富选股器: 找到 {len(candidates)} 只高ROE+高毛利率股票")
+    except Exception as e:
+        print(f"    东方财富选股器失败: {e}")
+
+    # 方案2：如果方案1失败或结果太少，用同花顺 i问财 思路
+    # 备选：直接请求东方财富排名数据
+    if len(candidates) < 50:
+        try:
+            # 东方财富A股列表接口，按ROE排序
+            for market_code in ['m:0+t:6,m:0+t:80,m:0+t:81', 'm:1+t:2,m:1+t:23']:
+                url = (
+                    f"http://82.push2.eastmoney.com/api/qt/clist/get"
+                    f"?pn=1&pz=300&po=1&np=1"
+                    f"&ut=bd1d9ddb04089700cf9c27f6f7426281"
+                    f"&fltt=2&invt=2&fid=f37&fs={market_code}"
+                    f"&fields=f12,f14,f37,f49"  # f37=ROE, f49=毛利率
+                )
+                if IMPERSONATE:
+                    resp = http.get(url, headers=HEADERS, timeout=15, impersonate="chrome")
+                else:
+                    resp = http.get(url, headers=HEADERS, timeout=15)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get('data', {}).get('diff', [])
+                    for item in items:
+                        code = item.get('f12', '')
+                        roe = item.get('f37')  # ROE
+                        if not code:
+                            continue
+                        if not (code.startswith('60') or code.startswith('00') or code.startswith('30')):
+                            continue
+                        # ROE排序取前300，基本都是>10%的
+                        if roe and float(roe) >= 13:
+                            candidates.add(code)
+
+                time.sleep(0.3)
+
+            print(f"    东方财富排名接口补充后: {len(candidates)} 只")
+        except Exception as e:
+            print(f"    东方财富排名接口失败: {e}")
+
+    # 方案3：兜底——如果所有批量接口都失败，使用股票池中PE合理的股票
+    if len(candidates) < 30:
+        print(f"    ⚠️ 批量接口均失败，使用兜底池")
+        from app.stock_data.stock_pool import FALLBACK_POOL
+        candidates = set(FALLBACK_POOL)
+
+    # 与实际股票池取交集（确保代码有效）
+    stock_pool_set = set(stock_pool)
+    valid_candidates = [c for c in candidates if c in stock_pool_set]
+
+    return valid_candidates
