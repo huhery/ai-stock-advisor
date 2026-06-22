@@ -10,7 +10,7 @@ spring:
   jackson:
     default-property-inclusion: non_null
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:81.69.42.239}:3306/ai_stock?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai
+    url: jdbc:mysql://${MYSQL_HOST:81.69.42.239}:3306/ai_stock?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
     username: ${MYSQL_USER:root}
     password: ${MYSQL_PASSWORD:AiStock2026!}
     driver-class-name: com.mysql.cj.jdbc.Driver

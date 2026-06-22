@@ -19,57 +19,70 @@ from app.crawler.scrapling_client import fetch_url
 
 
 # 数据源配置
+# enabled: 是否启用。国外财经站点（Reuters/CNBC/SCMP/Investing/Fed）在国内网络
+#          普遍不可达（连接超时或 403），默认关闭，避免每次爬取被超时拖慢并刷错误日志。
+#          如果部署环境有海外网络访问能力，可手动改为 True 重新启用。
 SOURCES = {
-    # === 国内政策 ===
+    # === 国内政策（网络可达，默认启用）===
     '国务院': {
         'url': 'https://www.gov.cn/zhengce/zuixin/index.htm',
         'parser': 'parse_gov_cn',
         'category': 'domestic',
         'language': 'zh',
+        # 国务院"最新政策"列表为 JS 动态渲染，普通 HTTP 请求拿不到内容，
+        # 需浏览器渲染（Playwright）。暂禁用，重要政策可通过证监会转发覆盖。
+        'enabled': False,
     },
     '证监会': {
-        'url': 'http://www.csrc.gov.cn/csrc/c100028/common_list.shtml',
+        'url': 'http://www.csrc.gov.cn/csrc/c100028/list.shtml',
         'parser': 'parse_csrc',
         'category': 'domestic',
         'language': 'zh',
+        'enabled': True,
     },
     '央行': {
         'url': 'http://www.pbc.gov.cn/goutongjiaoliu/113456/113469/index.html',
         'parser': 'parse_pbc',
         'category': 'domestic',
         'language': 'zh',
+        'enabled': True,
     },
-    # === 国际财经 ===
+    # === 国际财经（国内网络不可达，默认禁用）===
     'Reuters': {
         'url': 'https://www.reuters.com/business/',
         'parser': 'parse_reuters',
         'category': 'international',
         'language': 'en',
+        'enabled': False,
     },
     'CNBC': {
         'url': 'https://www.cnbc.com/world/',
         'parser': 'parse_cnbc',
         'category': 'international',
         'language': 'en',
+        'enabled': False,
     },
     'SCMP': {
         'url': 'https://www.scmp.com/business',
         'parser': 'parse_scmp',
         'category': 'international',
         'language': 'en',
+        'enabled': False,
     },
     'Investing': {
         'url': 'https://www.investing.com/news/stock-market-news',
         'parser': 'parse_investing',
         'category': 'international',
         'language': 'en',
+        'enabled': False,
     },
-    # === 美联储 ===
+    # === 美联储（国内网络不可达，默认禁用）===
     'FederalReserve': {
         'url': 'https://www.federalreserve.gov/newsevents/pressreleases.htm',
         'parser': 'parse_fed',
         'category': 'fed',
         'language': 'en',
+        'enabled': False,
     },
 }
 
@@ -99,7 +112,10 @@ def parse_gov_cn(html, base_url='https://www.gov.cn'):
 
 
 def parse_csrc(html, base_url='http://www.csrc.gov.cn'):
-    """解析证监会页面
+    """解析证监会新闻列表页
+
+    数据源为 list.shtml（静态列表页，含真实新闻数据）。
+    注意：原 common_list.shtml 是 JS 动态加载的空壳页，无法直接解析。
 
     @param html HTML 文本
     @param base_url 基础 URL
@@ -109,14 +125,25 @@ def parse_csrc(html, base_url='http://www.csrc.gov.cn'):
     """
     soup = BeautifulSoup(html, 'html.parser')
     items = []
-    for link in soup.select('.list_content a, .commonlist a')[:20]:
+    seen_urls = set()
+    # 证监会新闻详情页链接特征：含 content.shtml
+    for link in soup.select('a[href*="content"]'):
         title = link.get_text(strip=True)
         href = link.get('href', '')
+        # 过滤过短标题和无效链接
         if not title or len(title) < 5:
+            continue
+        if 'content' not in href:
             continue
         if not href.startswith('http'):
             href = base_url + href
+        # 去重（列表页存在重复链接）
+        if href in seen_urls:
+            continue
+        seen_urls.add(href)
         items.append({'title': title, 'url': href, 'publish_time': datetime.now()})
+        if len(items) >= 20:
+            break
     return items
 
 
@@ -437,6 +464,9 @@ def crawl_all_sources():
     total = 0
     new_items = []
     for name, config in SOURCES.items():
+        # 跳过已禁用的源（如国内网络不可达的国外站点）
+        if not config.get('enabled', True):
+            continue
         items = crawl_source(name, config)
         for item in items:
             is_new = save_news_return_new(item)

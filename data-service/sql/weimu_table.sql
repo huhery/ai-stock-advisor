@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS weimu_recommendation (
     id INT AUTO_INCREMENT PRIMARY KEY,
     stock_code VARCHAR(10) NOT NULL COMMENT '股票代码',
     stock_name VARCHAR(50) DEFAULT NULL COMMENT '股票名称',
+    sector VARCHAR(50) DEFAULT NULL COMMENT '所属行业板块',
     recommend_date DATE NOT NULL COMMENT '筛选日期',
     -- 财务指标
     roe_avg DECIMAL(8,2) DEFAULT NULL COMMENT 'ROE均值(%)',
@@ -26,3 +27,12 @@ CREATE TABLE IF NOT EXISTS weimu_recommendation (
     INDEX idx_code_date (stock_code, recommend_date),
     INDEX idx_valuation (valuation)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='微淼财务自由选股结果';
+
+-- ============================================================
+-- 兼容旧表：如果表早于 stock_name 字段创建，需手动补列。
+-- MySQL 不支持 ADD COLUMN IF NOT EXISTS（8.0 之前），
+-- 若列已存在执行会报错(可忽略)，或先用下面的查询判断：
+--   SHOW COLUMNS FROM weimu_recommendation LIKE 'stock_name';
+-- 不存在时再执行：
+-- ALTER TABLE weimu_recommendation
+--     ADD COLUMN stock_name VARCHAR(50) DEFAULT NULL COMMENT '股票名称' AFTER stock_code;

@@ -218,12 +218,19 @@
       <el-table :data="stocks" stripe border style="width: 100%"
                 :default-sort="{ prop: 'score', order: 'descending' }">
         <el-table-column prop="stock_code" label="代码" width="80" />
-        <el-table-column label="估值" width="75" sortable sort-by="valuation">
+        <el-table-column prop="stock_name" label="名称" width="120" show-overflow-tooltip />
+        <el-table-column width="85" sortable sort-by="valuation">
+          <template #header>
+            <el-tooltip placement="top"
+              content="估值水平（非持仓状态）：低估=好价格可买入；合理=估值适中；高估=偏贵建议卖出；观望=暂不符合买入条件。">
+              <span style="border-bottom:1px dashed #999; cursor:help">估值</span>
+            </el-tooltip>
+          </template>
           <template #default="{ row }">
-            <el-tag v-if="row.valuation === 'buy'" type="danger" size="small">可买入</el-tag>
-            <el-tag v-else-if="row.valuation === 'hold'" type="warning" size="small">持有</el-tag>
-            <el-tag v-else-if="row.valuation === 'sell'" type="info" size="small">卖出</el-tag>
-            <el-tag v-else size="small">等待</el-tag>
+            <el-tag v-if="row.valuation === 'buy'" type="danger" size="small">低估·可买</el-tag>
+            <el-tag v-else-if="row.valuation === 'hold'" type="warning" size="small">估值合理</el-tag>
+            <el-tag v-else-if="row.valuation === 'sell'" type="info" size="small">高估·可卖</el-tag>
+            <el-tag v-else size="small">观望</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="score" label="评分" width="65" sortable>
@@ -276,6 +283,46 @@
         <el-table-column label="连续分红" width="80">
           <template #default="{ row }">
             {{ row.continuous_dividend_years || 0 }}年
+          </template>
+        </el-table-column>
+        <el-table-column label="当前价格" width="90" sortable sort-by="current_price">
+          <template #default="{ row }">
+            <span v-if="row.current_price" style="font-weight: bold; color: #303133">
+              ¥{{ Number(row.current_price).toFixed(2) }}
+            </span>
+            <span v-else style="color: #999">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column width="110">
+          <template #header>
+            <el-tooltip placement="top"
+              content="合理买入价 = 每股收益 × 15（PE=15 的价位，微淼的好价格上限）。当前价 ≤ 此价即为好价格，可买入。">
+              <span style="border-bottom:1px dashed #999; cursor:help">合理买入价</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <div v-if="row.suggest_buy_price">
+              <span style="color: #67c23a; font-weight: bold">
+                ≤¥{{ Number(row.suggest_buy_price).toFixed(2) }}
+              </span>
+              <el-tag v-if="row.current_price && row.current_price <= row.suggest_buy_price"
+                type="success" size="small" effect="plain" style="margin-left:2px">现价合适</el-tag>
+            </div>
+            <span v-else style="color: #999">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column width="110">
+          <template #header>
+            <el-tooltip placement="top"
+              content="高估价 = 每股收益 × 30（PE=30 的价位，微淼的高估分界线）。当前价 ≥ 此价即为高估，应考虑卖出。">
+              <span style="border-bottom:1px dashed #999; cursor:help">高估价</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span v-if="row.suggest_sell_price" style="color: #f56c6c; font-weight: bold">
+              ≥¥{{ Number(row.suggest_sell_price).toFixed(2) }}
+            </span>
+            <span v-else style="color: #999">-</span>
           </template>
         </el-table-column>
       </el-table>

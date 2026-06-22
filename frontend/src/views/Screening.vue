@@ -56,7 +56,13 @@
               </div>
               <div style="color:#666">{{ row.sell_type }}</div>
             </div>
-            <el-tag v-else size="small" type="info">持有中</el-tag>
+            <el-tag v-else-if="row.buy_status === 'pending'" size="small" type="warning">
+              待买入
+            </el-tag>
+            <el-tag v-else-if="row.buy_status === 'expired'" size="small" type="info">
+              未触发
+            </el-tag>
+            <el-tag v-else size="small" type="success">持有中</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="reason" label="筛选理由" min-width="160" />

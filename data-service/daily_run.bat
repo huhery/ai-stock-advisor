@@ -20,8 +20,8 @@ echo [3/4] 跟踪历史推荐表现...
 python -c "import sys; sys.path.append('.'); from app.learning.tracker import track_recommendations; track_recommendations()"
 echo.
 
-echo [4/4] 检查卖出信号...
-python -c "import sys; sys.path.append('.'); from app.screening.signals import check_all_holdings; check_all_holdings()"
+echo [4/4] 检查买入成交与卖出信号...
+python -c "import sys; sys.path.append('.'); from app.screening.signals import check_pending_buys, check_all_holdings; check_pending_buys(); check_all_holdings()"
 echo.
 
 echo ==========================================

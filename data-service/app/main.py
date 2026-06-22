@@ -12,7 +12,7 @@ def startup():
     from app.learning.tracker import track_recommendations
     from app.learning.optimizer import weekly_optimize, ai_suggest_rules
     from app.screening.engine import run_screening
-    from app.screening.signals import check_all_holdings
+    from app.screening.signals import check_all_holdings, check_pending_buys
     from app.learning.auto_evolution import run_weekly_evolution
 
     # === 每日任务 ===
@@ -20,7 +20,9 @@ def startup():
     scheduler.add_job(crawl_all_sources, 'cron', hour=9, minute=30, id='crawl_news_am')
     # 每日 15:35 自动选股
     scheduler.add_job(run_screening, 'cron', hour=15, minute=35, id='daily_screening')
-    # 每日 15:50 检查卖出信号
+    # 每日 15:45 检查待买入是否成交（pending -> holding）
+    scheduler.add_job(check_pending_buys, 'cron', hour=15, minute=45, id='check_pending')
+    # 每日 15:50 检查卖出信号（只对已成交持仓）
     scheduler.add_job(check_all_holdings, 'cron', hour=15, minute=50, id='check_sell')
     # 每日 16:00 跟踪推荐表现
     scheduler.add_job(track_recommendations, 'cron', hour=16, minute=0, id='daily_tracking')
@@ -184,10 +186,11 @@ def trigger_ai_suggest():
 
 @app.post("/api/signals/check-sell")
 def trigger_check_sell():
-    """手动触发卖出信号检查"""
-    from app.screening.signals import check_all_holdings
+    """手动触发卖出信号检查（先检查待买入成交，再检查卖出）"""
+    from app.screening.signals import check_all_holdings, check_pending_buys
+    check_pending_buys()
     check_all_holdings()
-    return {"code": 0, "message": "卖出信号检查完成"}
+    return {"code": 0, "message": "买入成交与卖出信号检查完成"}
 
 
 # ===== 自动进化 API =====
@@ -433,6 +436,8 @@ def get_weimu_status():
 def get_weimu_list(date: str = None):
     """获取微淼选股结果"""
     from app.db import get_connection
+    from app.stock_data.market_data import get_current_price, get_stock_name
+
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
@@ -446,11 +451,43 @@ def get_weimu_list(date: str = None):
                     "SELECT * FROM weimu_recommendation WHERE recommend_date = (SELECT MAX(recommend_date) FROM weimu_recommendation) ORDER BY score DESC"
                 )
             results = cursor.fetchall()
+
+            # 为每个结果添加实时价格信息
             for r in results:
                 if r.get('created_at'):
                     r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
                 if r.get('recommend_date'):
                     r['recommend_date'] = r['recommend_date'].strftime('%Y-%m-%d')
+
+                # 股票名称为空时实时补全（腾讯/新浪接口）
+                if not r.get('stock_name') or r['stock_name'].startswith('股票'):
+                    name = get_stock_name(r['stock_code'])
+                    r['stock_name'] = name or f"股票{r['stock_code']}"
+
+                # 获取当前价格
+                current_price = None
+                try:
+                    current_price = get_current_price(r['stock_code'])
+                except Exception:
+                    current_price = None
+                r['current_price'] = current_price
+
+                # 根据微淼标准计算建议买入/卖出价（PE有效时）
+                # 注意：数据库取出的 pe 是 Decimal，current_price 是 float，
+                # 需统一转 float 再运算，否则 float/Decimal 会抛 TypeError。
+                r['suggest_buy_price'] = None
+                r['suggest_sell_price'] = None
+                try:
+                    pe = float(r['pe']) if r.get('pe') is not None else 0
+                    if current_price and pe > 0:
+                        eps = float(current_price) / pe
+                        if eps > 0:
+                            # 微淼认为 PE<15 为好价格，PE>30 为高估
+                            r['suggest_buy_price'] = round(eps * 15.0, 2)
+                            r['suggest_sell_price'] = round(eps * 30.0, 2)
+                except Exception:
+                    pass
+
             return {"code": 0, "data": results}
     finally:
         conn.close()

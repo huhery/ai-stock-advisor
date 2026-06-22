@@ -50,14 +50,31 @@ const avgChange = ref(0)
 const totalCount = ref(0)
 const byDays = ref([])
 
+// 把可能为字符串/Decimal 的值安全转为数字
+const toNum = (v) => {
+  const n = Number(v)
+  return isNaN(n) ? 0 : n
+}
+
 onMounted(async () => {
   try {
     const res = await getPerformance()
-    const data = res.data?.data || {}
-    winRate.value = data.overall_win_rate || 0
-    avgChange.value = data.t5_stats?.avg_change?.toFixed(2) || 0
-    totalCount.value = data.t5_stats?.total || 0
-    byDays.value = data.by_days || []
+    // 兼容多层包装：Java 后端用 Result 再包一层 -> {code,data:{code,data:{...}}}
+    let data = res.data?.data || {}
+    if (data && data.code !== undefined && data.data !== undefined) {
+      data = data.data
+    }
+
+    winRate.value = toNum(data.overall_win_rate)
+    avgChange.value = toNum(data.t5_stats?.avg_change).toFixed(2)
+    totalCount.value = toNum(data.t5_stats?.total)
+    // 各周期数值统一转为数字，避免字符串导致显示异常
+    byDays.value = (data.by_days || []).map(d => ({
+      days_after: toNum(d.days_after),
+      total: toNum(d.total),
+      win_count: toNum(d.win_count),
+      avg_change: toNum(d.avg_change),
+    }))
   } catch (e) { console.error(e) }
 })
 </script>

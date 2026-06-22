@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS stock_recommendation (
     recommend_price DECIMAL(10,2) COMMENT '推荐时价格',
     buy_price DECIMAL(10,2) COMMENT '建议买入价',
     buy_type VARCHAR(100) COMMENT '买入方式说明',
+    buy_status VARCHAR(10) DEFAULT 'holding' COMMENT '买入状态: pending待买入/holding持有中/sold已卖出/expired未成交',
     take_profit_price DECIMAL(10,2) COMMENT '止盈价',
     stop_loss_price DECIMAL(10,2) COMMENT '止损价',
     support_level DECIMAL(10,2) COMMENT '支撑位',

@@ -117,8 +117,19 @@ def _try_requests(url, timeout=15):
     """
     for attempt in range(2):
         try:
-            resp = _session.get(url, headers=_DEFAULT_HEADERS, timeout=timeout)
+            # 禁用代理，避免代理连接问题
+            proxies = {
+                'http': None,
+                'https': None
+            }
+            resp = _session.get(url, headers=_DEFAULT_HEADERS, timeout=timeout, proxies=proxies)
             if resp.status_code == 200 and resp.text:
+                # 修正编码：国内政府站点多为 GBK/GB2312，requests 可能误判为 ISO-8859-1
+                # 用 apparent_encoding（chardet 探测）纠正，避免中文乱码
+                if resp.encoding is None or resp.encoding.lower() in ('iso-8859-1', 'ascii'):
+                    detected = resp.apparent_encoding
+                    if detected:
+                        resp.encoding = detected
                 return resp.text
             _log(f"requests 状态码: {resp.status_code}, body长度: {len(resp.text) if resp.text else 0}", url)
             return None
@@ -146,7 +157,12 @@ def _try_requests_json(url, timeout=15):
     """
     for attempt in range(2):
         try:
-            resp = _session.get(url, headers=_DEFAULT_HEADERS, timeout=timeout)
+            # 禁用代理，避免代理连接问题
+            proxies = {
+                'http': None,
+                'https': None
+            }
+            resp = _session.get(url, headers=_DEFAULT_HEADERS, timeout=timeout, proxies=proxies)
             if resp.status_code == 200 and resp.text:
                 cleaned = resp.text.strip()
                 # 处理 JSONP 包裹
@@ -223,12 +239,26 @@ def _try_stealthy(url, timeout=30):
 
     延迟导入，避免未安装 patchright 时模块加载失败。
 
+    注意：StealthyFetcher.fetch 是同步 API，底层用 Playwright Sync。
+    若当前运行在 asyncio 事件循环中（如 FastAPI 请求线程），调用会直接抛
+    "Sync API inside the asyncio loop" 异常，故此处先检测事件循环并跳过，
+    避免崩溃和无意义的报错日志。
+
     @param url 目标 URL
     @param timeout 超时时间
     @return 页面 HTML 文本或 None
     @author honghui
     @date 2026/06/11 10:00
     """
+    # 检测是否处于 asyncio 事件循环中，是则跳过（同步 Playwright 无法在事件循环内运行）
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+        _log("当前处于 asyncio 事件循环，跳过 StealthyFetcher（同步API不兼容）", url)
+        return None
+    except RuntimeError:
+        pass  # 没有运行中的事件循环，可以安全使用同步 API
+
     try:
         from scrapling.fetchers import StealthyFetcher
         _log("降级使用 StealthyFetcher...", url)

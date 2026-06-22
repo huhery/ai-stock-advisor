@@ -232,20 +232,27 @@ def get_policy_keywords():
 
 def save_recommendation(stock_code, stock_name, sector, total_score, reason,
                         rule_scores, price, buy_signal=None):
+    # 买入状态：选股在收盘后(15:35)运行，当天已无法成交，
+    # 因此所有新推荐统一初始为 pending（待买入），
+    # 由次日起的 check_pending_buys 检查股价是否触及买入价，触及才转 holding。
+    buy_type = buy_signal.get('buy_type', '收盘价买入') if buy_signal else '收盘价买入'
+    buy_status = 'pending'
+
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
             sql = """INSERT INTO stock_recommendation
                      (stock_code, stock_name, sector, total_score, reason, rule_scores,
-                      recommend_date, recommend_price, buy_price, buy_type,
+                      recommend_date, recommend_price, buy_price, buy_type, buy_status,
                       take_profit_price, stop_loss_price, support_level, resistance_level, max_hold_days)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(sql, (
                 stock_code, stock_name, sector, total_score,
                 reason, json.dumps(rule_scores, ensure_ascii=False),
                 date.today(), price,
                 buy_signal.get('buy_price') if buy_signal else price,
-                buy_signal.get('buy_type', '收盘价买入') if buy_signal else '收盘价买入',
+                buy_type,
+                buy_status,
                 buy_signal.get('take_profit_price') if buy_signal else round(price * 1.10, 2),
                 buy_signal.get('stop_loss_price') if buy_signal else round(price * 0.95, 2),
                 buy_signal.get('support_level') if buy_signal else None,

@@ -99,6 +99,13 @@ def check_sell_signal(stock_code, buy_price, buy_date, kline_df):
     if kline_df.empty or len(kline_df) < 5:
         return None
 
+    # 最小持有保护：推荐/买入当天不产生卖出信号（T+1 才可卖，且避免当天买当天卖）
+    bd = buy_date
+    if isinstance(bd, str):
+        bd = datetime.strptime(bd, '%Y-%m-%d').date()
+    if (date.today() - bd).days < 1:
+        return None
+
     current_price = kline_df['收盘'].iloc[-1]
     change_pct = round((current_price - buy_price) / buy_price * 100, 2)
 
@@ -181,21 +188,121 @@ def check_sell_signal(stock_code, buy_price, buy_date, kline_df):
     return None  # 继续持有
 
 
+def check_pending_buys():
+    """检查待买入(pending)的推荐是否已成交
+
+    对于"建议回调至MAx买入"这类限价挂单，只有当股价回调触及买入价时才算成交。
+    每日盘后执行：查推荐日之后的K线最低价，若曾 <= 买入价则转为 holding（持有中），
+    否则保持 pending（待买入），不进入卖出跟踪。
+
+    超过最大持有天数仍未成交的，标记为 expired（未成交失效），不再跟踪。
+    """
+    print(f"[{datetime.now()}] 检查待买入成交情况...")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """SELECT id, stock_code, stock_name, recommend_date,
+                            buy_price, max_hold_days
+                     FROM stock_recommendation
+                     WHERE buy_status = 'pending'
+                     AND recommend_date >= DATE_SUB(CURDATE(), INTERVAL 20 DAY)"""
+            cursor.execute(sql)
+            pendings = cursor.fetchall()
+    finally:
+        conn.close()
+
+    filled = 0
+    expired = 0
+    today = date.today()
+    for p in pendings:
+        stock_code = p['stock_code']
+        buy_price = float(p['buy_price']) if p['buy_price'] else 0
+        rec_date = p['recommend_date']
+        if isinstance(rec_date, str):
+            rec_date = datetime.strptime(rec_date, '%Y-%m-%d').date()
+        max_hold = p['max_hold_days'] or DEFAULT_MAX_HOLD_DAYS
+
+        if buy_price <= 0:
+            continue
+
+        kline_df = get_daily_kline(stock_code, days=30)
+        if kline_df.empty:
+            continue
+
+        # 只看推荐日之后（含次日起）的K线
+        df = kline_df.copy()
+        df['日期'] = df['日期'].astype(str)
+        after = df[df['日期'] > rec_date.strftime('%Y-%m-%d')]
+        if after.empty:
+            # 推荐当天之后还没有新交易日，保持 pending
+            continue
+
+        # 期间最低价是否触及买入价（回调买入）
+        min_low = after['最低'].min()
+        if min_low <= buy_price:
+            # 成交：记录实际成交日（首个触及的交易日）
+            touched = after[after['最低'] <= buy_price]
+            fill_date = touched.iloc[0]['日期'] if not touched.empty else today.strftime('%Y-%m-%d')
+            _mark_buy_filled(p['id'], fill_date)
+            filled += 1
+            print(f"  {p['stock_name']}({stock_code}): 已成交 @ {buy_price}（{fill_date}）")
+        else:
+            # 未成交：超过最大持有天数则失效
+            if (today - rec_date).days > max_hold:
+                _mark_buy_expired(p['id'])
+                expired += 1
+                print(f"  {p['stock_name']}({stock_code}): 超 {max_hold} 天未触及买入价 {buy_price}，标记未成交")
+
+    print(f"[{datetime.now()}] 待买入检查完成：成交 {filled} 只，失效 {expired} 只，"
+          f"仍等待 {len(pendings) - filled - expired} 只")
+
+
+def _mark_buy_filled(recommendation_id, fill_date):
+    """标记买入成交：pending -> holding，并把推荐日更新为实际成交日（用于卖出持有天数计算）"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE stock_recommendation SET buy_status='holding' WHERE id=%s",
+                (recommendation_id,)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mark_buy_expired(recommendation_id):
+    """标记未成交失效：pending -> expired"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE stock_recommendation SET buy_status='expired' WHERE id=%s",
+                (recommendation_id,)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def check_all_holdings():
     """检查所有持仓股是否触发卖出信号
 
-    每日盘后执行。
+    每日盘后执行。只对已成交(holding)的推荐跟踪卖出，
+    待买入(pending)/未成交(expired)的不跟踪。
     """
     print(f"[{datetime.now()}] 检查持仓卖出信号...")
 
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
-            # 获取所有未卖出的推荐（有买入价但无卖出记录）
+            # 只跟踪已成交持有中的推荐
             sql = """SELECT r.id, r.stock_code, r.stock_name, r.recommend_date,
                             r.buy_price, r.buy_type
                      FROM stock_recommendation r
-                     WHERE r.sell_price IS NULL
+                     WHERE r.buy_status = 'holding'
+                     AND r.sell_price IS NULL
                      AND r.buy_price IS NOT NULL
                      AND r.recommend_date >= DATE_SUB(CURDATE(), INTERVAL 20 DAY)"""
             cursor.execute(sql)
@@ -215,7 +322,7 @@ def check_all_holdings():
 
         signal = check_sell_signal(stock_code, buy_price, buy_date, kline_df)
         if signal:
-            # 更新卖出信息
+            # 更新卖出信息 + 状态转 sold
             update_sell_signal(h['id'], signal)
             sell_count += 1
             print(f"  {h['stock_name']}({stock_code}): {signal['sell_type']}，"
@@ -225,13 +332,14 @@ def check_all_holdings():
 
 
 def update_sell_signal(recommendation_id, signal):
-    """更新推荐记录的卖出信息"""
+    """更新推荐记录的卖出信息，并将状态置为 sold"""
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
             sql = """UPDATE stock_recommendation
                      SET sell_price = %s, sell_type = %s,
-                         sell_date = CURDATE(), profit_pct = %s
+                         sell_date = CURDATE(), profit_pct = %s,
+                         buy_status = 'sold'
                      WHERE id = %s"""
             cursor.execute(sql, (
                 signal['sell_price'], signal['sell_type'],
